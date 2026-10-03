@@ -64,9 +64,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def cached_analyze(symbol: str):
-    """缓存分析结果，5分钟内相同资产不重复请求"""
+    """缓存分析结果，2分钟内相同资产不重复请求"""
     return analyze_asset(symbol)
 
 

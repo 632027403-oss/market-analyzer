@@ -51,30 +51,72 @@ def fetch_stock_data(ticker: str, period: str = "1y") -> Tuple[Optional[pd.DataF
         print(f"Stock fetch error {ticker}: {e}")
         return None, None
 
+# yfinance 对应的主流加密货币代码（作为 CoinGecko 失败时的备用）
+YF_CRYPTO_MAP = {
+    "bitcoin": "BTC-USD",
+    "ethereum": "ETH-USD",
+    "solana": "SOL-USD",
+    "binancecoin": "BNB-USD",
+    "ripple": "XRP-USD",
+    "cardano": "ADA-USD",
+    "dogecoin": "DOGE-USD",
+    "avalanche-2": "AVAX-USD",
+}
+
 def fetch_crypto_data(coin_id: str, days: int = 365) -> Tuple[Optional[pd.DataFrame], Optional[Dict]]:
+    """优先用 CoinGecko，失败则回退到 yfinance（更稳定）"""
+    # 1. 尝试 CoinGecko
     try:
-        # market chart
-        chart = cg.get_coin_market_chart_by_id(id=coin_id, vs_currency="usd", days=days)
+        chart = cg.get_coin_market_chart_by_id(id=coin_id, vs_currency="usd", days=min(days, 365))
         prices = chart["prices"]
-        volumes = chart["total_volumes"]
+        volumes = chart.get("total_volumes", [])
         df = pd.DataFrame(prices, columns=["timestamp", "Close"])
         df["Date"] = pd.to_datetime(df["timestamp"], unit="ms")
         df = df.set_index("Date")
-        vol_df = pd.DataFrame(volumes, columns=["timestamp", "Volume"])
-        vol_df["Date"] = pd.to_datetime(vol_df["timestamp"], unit="ms")
-        vol_df = vol_df.set_index("Date")
-        df["Volume"] = vol_df["Volume"]
+        if volumes:
+            vol_df = pd.DataFrame(volumes, columns=["timestamp", "Volume"])
+            vol_df["Date"] = pd.to_datetime(vol_df["timestamp"], unit="ms")
+            vol_df = vol_df.set_index("Date")
+            df["Volume"] = vol_df["Volume"]
+        else:
+            df["Volume"] = 0
         df = df[["Close", "Volume"]].dropna()
-        # add OHLC approx (use Close for all for simplicity)
         df["Open"] = df["Close"]
         df["High"] = df["Close"]
         df["Low"] = df["Close"]
-        # coin info
-        info = cg.get_coin_by_id(id=coin_id, localization=False, tickers=False, market_data=True, community_data=False, developer_data=False)
+        info = None
+        try:
+            info = cg.get_coin_by_id(id=coin_id, localization=False, tickers=False,
+                                     market_data=True, community_data=False, developer_data=False)
+        except Exception:
+            pass
+        if info is None:
+            info = {"name": coin_id.capitalize(), "market_data": {}}
         return df, info
     except Exception as e:
-        print(f"Crypto fetch error {coin_id}: {e}")
-        return None, None
+        print(f"CoinGecko error {coin_id}: {e}")
+
+    # 2. 回退到 yfinance
+    yf_symbol = YF_CRYPTO_MAP.get(coin_id)
+    if yf_symbol:
+        try:
+            t = yf.Ticker(yf_symbol)
+            period = "1y" if days >= 300 else "6mo" if days >= 150 else "3mo"
+            hist = t.history(period=period)
+            if hist is not None and not hist.empty:
+                df = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
+                info = {
+                    "name": coin_id.replace("-", " ").title(),
+                    "market_data": {
+                        "current_price": {"usd": float(df["Close"].iloc[-1])},
+                        "price_change_percentage_24h": float(df["Close"].pct_change().iloc[-1] * 100) if len(df) > 1 else 0,
+                    }
+                }
+                return df, info
+        except Exception as e:
+            print(f"yfinance crypto fallback error {yf_symbol}: {e}")
+
+    return None, None
 
 def compute_technicals(df: pd.DataFrame) -> Dict[str, Any]:
     if len(df) < 50:
